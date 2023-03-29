@@ -237,7 +237,7 @@ class Distribution(EmptyDistribution):
             - percentiles (or bin centers)
             - bins (edges)
         """
-1
+
         sample_no_nan = sample[np.logical_not(np.isnan(sample))]
         if sample_no_nan.size == 0:
             percentiles = np.array([np.nan]*self.nbins)
@@ -741,9 +741,9 @@ class JointDistribution():
                     
                     # compute mask
                     mask1 = np.logical_and(sample1.flatten() >= self.distribution1.bins[i_bin],
-                                sample.flatten() < self.distribution1.bins[i_bin+1])
+                                sample1.flatten() < self.distribution1.bins[i_bin+1])
                     mask2 = np.logical_and(sample2.flatten() >= self.distribution2.bins[j_bin],
-                                sample.flatten() < self.distribution2.bins[j_bin+1])
+                                sample2.flatten() < self.distribution2.bins[j_bin+1])
                     mask = np.logical_and(mask1,mask2)
                     # get all indices
                     ind_mask = np.where(mask)[0]
