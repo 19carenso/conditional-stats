@@ -517,10 +517,10 @@ class Distribution(EmptyDistribution):
                 # shuffle
                 np.random.seed(int(round(time.time() * 1000)) % 1000)
                 np.random.shuffle(ind_mask)
+
+                self.bin_sample_size[i_bin] = ind_mask.size # count all points there
                 # select 'sizemax' first elements
                 self.bin_locations[i_bin] = ind_mask[:sizemax]
-                # self.bin_sample_size[i_bin] = min(ind_mask.size,sizemax) # cap at sizemax
-                self.bin_sample_size[i_bin] = ind_mask.size # count all points there
 
 
             if verbose: print()
@@ -775,7 +775,98 @@ class JointDistribution():
             pass
 
         # Compute probability density
-        self.density, _, _ = np.histogram2d(x=sample1,y=sample2,bins=(self.bins1,self.bins2),density=True)        
+        self.density, _, _ = np.histogram2d(x=sample1,y=sample2,bins=(self.bins1,self.bins2),density=True)
+
+    def computeNormalizedDensity(self, sample1, sample2, data = None, verbose = False):
+
+        if sample1.shape != sample2.shape : ## here assume sample 1 has bigger 
+            sameShape = False
+            ratio_t, ratio_y, ratio_x = int(sample1.shape[0]/sample2.shape[0]), int(sample1.shape[1]/sample2.shape[1]), int(sample1.shape[2]/sample2.shape[2])
+        else : 
+            sameShape = True
+            ratio_t, ratio_y, ratio_x = 1,1,1
+
+        l1, l2 = len(self.bins1), len(self.bins2)
+
+        digit1 = np.digitize(sample1, self.bins1, right = True)
+        digit2 = np.digitize(sample2, self.bins2, right = True)
+        #if verbose : print(digit1, digit2)
+        N1 = [np.sum(digit1==i1) for i1 in range(l1)]
+        N2 = [np.sum(digit2==i2) for i2 in range(l2)]
+
+        with np.errstate(divide='ignore'):
+            Norm = 1 / np.sqrt(np.outer(N1, N2))
+        Norm[np.isinf(Norm)] = 1
+
+        self.density = np.zeros(shape = (l1, l2))
+        if data is not None : data_over_density = np.zeros(shape=(l1,l2))
+
+        if sameShape :
+            for i2 in range(l2): 
+                idx = tuple(np.argwhere(digit2==i2).T)
+                self.density[:, i2] = np.bincount(digit1[idx], minlength=l1)
+
+                if data is not None: 
+                    for i1 in range(l1):
+                        data_idx = tuple(np.argwhere((digit1==i1) & (digit2==i2)).T)
+                        if len(data_idx)>0 :
+                            data_over_density[i1, i2] = np.nanmean(data[data_idx])
+                        else : data_over_density[i1, i2] = 0
+
+            self.density *= Norm
+
+        if data is not None : return data_over_density
+
+    def computeVariationOverDensity(self, sample1, sample11, bins11, sample2, sample22, bins22, reverse = False, verbose = False):
+
+        l1, l2 = len(self.bins1), len(self.bins2)
+
+        assert l1 == len(bins11) & l1 == len(bins22)
+
+        digit1 = np.digitize(sample1, self.bins1, right = True)
+        digit2 = np.digitize(sample2, self.bins2, right = True)
+
+        
+        digit11 = np.digitize(sample11, bins11, right = True)
+        digit22 = np.digitize(sample22, bins22, right = True)
+
+        N1 = [np.sum(digit1==i1) for i1 in range(l1)]
+        N2 = [np.sum(digit2==i2) for i2 in range(l2)]
+
+        with np.errstate(divide='ignore'):
+            Norm = 1 / np.sqrt(np.outer(N1, N2))
+        Norm[np.isinf(Norm)] = 1
+
+        self.density = np.zeros(shape = (l1, l2))
+
+        data1_over_density = np.zeros(shape=(l1,l2))
+        data2_over_density = np.zeros(shape=(l1,l2))
+
+
+        for i2 in range(l2): 
+            idx_i = tuple(np.argwhere(digit2==i2).T)
+            self.density[:, i2] = np.bincount(digit1[idx_i], minlength=l1)
+
+            for i1 in range(l1):
+                next_idx = tuple(np.argwhere((digit11==i1) & (digit22==i2)).T) #if bins are the same, i2 and i1 correponds to the same bin
+                current_idx = tuple(np.argwhere((digit1==i1) & (digit2==i2)).T)
+
+                if (len(next_idx)>0) & (len(current_idx)>0) :
+                    if reverse :
+                        data1_over_density[i1, i2] =  (- np.mean(sample11[next_idx]) + np.mean(sample1[current_idx])) / (5*np.mean(sample11[next_idx]))
+                        data2_over_density[i1, i2] =  (- np.mean(sample22[next_idx]) + np.mean(sample2[current_idx])) / (5*np.mean(sample22[next_idx]))
+                        
+                    else : 
+                        data1_over_density[i1, i2] = (np.mean(sample11[next_idx]) - np.mean(sample1[current_idx])) / (5*np.mean(sample1[current_idx]))
+                        data2_over_density[i1, i2] = (np.mean(sample22[next_idx]) - np.mean(sample2[current_idx])) / (5*np.mean(sample2[current_idx]))
+
+                else : 
+                    data1_over_density[i1, i2] = 0
+                    data2_over_density[i1, i2] = 0
+
+        self.density *= Norm
+
+        return data1_over_density, data2_over_density
 
 
 
@@ -862,7 +953,7 @@ class ConditionalDistribution():
         
         # Test if sample size is correct to access sample points
         if Npoints != self.on.size:
-            # print(Npoints,self.on.size)
+            #print(Npoints,self.on.size)
             raise WrongArgument("ABORT: sample size is different than that of the reference variable, so the masks might differ")
 
         return Nz, sample_out
