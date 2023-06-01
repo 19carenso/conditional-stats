@@ -9,6 +9,7 @@ import numpy as np
 from math import log10,ceil,floor,exp
 import time
 import sys
+from collections import defaultdict
 
 class WrongArgument(Exception):
     pass
@@ -463,6 +464,9 @@ class Distribution(EmptyDistribution):
 
         if verbose:
             print("Finding bin locations...")
+            
+        # Check if sample is xarray or np.array         
+        type_sample = False if type(sample) == np.ndarray else True
 
         # print(sample.shape)
         sample = self.formatDimensions(sample)
@@ -510,8 +514,15 @@ class Distribution(EmptyDistribution):
                 if verbose: print('%d..'%i_bin,end='')
 
                 # compute mask
-                mask = np.logical_and(sample.flatten() >= self.bins[i_bin],
+
+                # Adapt code for xarray 
+                if type_sample:
+                    mask = np.logical_and(sample >= self.bins[i_bin], sample < self.bins[i_bin+1])
+                
+                else:
+                    mask = np.logical_and(sample.flatten() >= self.bins[i_bin],
                             sample.flatten() < self.bins[i_bin+1])
+                
                 # get all indices
                 ind_mask = np.where(mask)[0]
                 # shuffle
@@ -531,6 +542,308 @@ class Distribution(EmptyDistribution):
         # If reach this point, everything should have worked smoothly, so:
         self.bin_locations_stored = True
 
+    def computeDataOverBins(self,sample, data, label = None, sizemax=50, verbose=False,method = 'iterative reducing'):
+        """
+        This function doesn't require bin_locations to be stored as it will recomputed everything mask per bin,
+        but it will be much faster as it will reduce the size of the arrays after each bin computation.
+        
+        First output is the data with no treatmeant over bins
+        
+        the other outputs are optionnal and are computed only if the label array of MCS is provided
+        they consist of an analysis of bins>40 so the extremes only
+        
+        grouped_data is the data aggregated by grouping, quite straightforward
+        the 2 following are ordered to correspond to grouped_data 
+        values_over_labels is the sum of the values of sample divided by the distinct counts of labels. 
+        grouped_counts represent this distinct count of labels
+        """
+
+        if verbose:
+            print("Finding bin locations...")
+            
+        sample = sample.flatten()
+        data = data.flatten()
+        label = label.flatten()
+
+        self.data_over_bins  = [[] for _ in range(self.nbins)]
+
+        XSample_data = []
+        XSample_values = []
+        XSample_labels = []
+
+        if verbose: print()
+
+        if method == 'iterative reducing':
+            # Store a tmp for each array
+            first_bin = False
+            tmp_sample = sample.copy()
+            tmp_data = data.copy()
+            tmp_label = label.copy()
+            
+            for i_bin, bin_size in enumerate(self.bin_sample_size):
+                if bin_size == 0 : continue
+                elif bin_size !=0:
+                    if first_bin :  ## this is the first bin, we need to remove the nan values and then compute a max that only keeps a certain ratio of the points
+                        tmp_sample = tmp_sample[~np.isnan(tmp_label)]
+                        tmp_data = tmp_data[~np.isnan(tmp_label)]
+                        tmp_label = tmp_label[~np.isnan(tmp_label)]
+                        first_bin = False
+                    
+                        print('at bin #: ', i_bin, 'removed ', tmp_label.size/self.labels.size, '% of the arrays according to label == nan')
+
+                        # create a random mask that contains a certain ratio of true elements that correspond to the ration of the next 2 bins 
+                        first_excess_amount = bin_size - sizemax
+                        mask = np.logical_and(tmp_sample.flatten() >= self.bins[i_bin], tmp_sample.flatten() < self.bins[i_bin+1])
+                        # Indices of True values in the mask array
+                        true_indices = np.where(mask)[0]
+                        
+                        # Randomly select indices to change to False
+                        false_indices = np.random.choice(true_indices, size=first_excess_amount, replace=False)
+                        # Change the selected indices to False
+                        mask[false_indices] = False
+                            
+                        #compute data_over_bin according to mask
+                        tmp_data_nan = tmp_data[mask[:]]
+                        tmp_data_no_nan = tmp_data_nan[~np.isnan(tmp_data_nan)]
+                        self.data_over_bins[i_bin]  = tmp_data_no_nan
+                        
+                        # reduce tmp array according to ~true_indices
+                        tmp_sample = tmp_sample[~true_indices]
+                        tmp_data = tmp_data[~true_indices]
+                        tmp_label = tmp_label[~true_indices]
+                    
+                    else : 
+                        mask = np.logical_and(tmp_sample.flatten() >= self.bins[i_bin], tmp_sample.flatten() < self.bins[i_bin+1])
+                        ## Extremes computations only
+                        if i_bin >= 40 and label is not None:
+                            # put mask_no_nan to False if Xsample_labels[mask] is nan
+                            mask_no_nan = np.logical_and(mask, ~np.isnan(tmp_label)) 
+                            ## this must be done before the next line because tmp_sample still contains data of MCS of different durations
+                            XSample_data.extend(tmp_data[mask_no_nan])
+                            XSample_values.extend(tmp_sample[mask_no_nan])
+                            XSample_labels.extend(tmp_label[mask_no_nan])
+                            
+                        #compute data_over_bin according to mask
+                        tmp_data_nan = tmp_data[mask[:]]
+                        tmp_data_no_nan = tmp_data_nan[~np.isnan(tmp_data_nan)]
+                        self.data_over_bins[i_bin]  = tmp_data_no_nan
+                        
+                        ## reduce tmp array according to ~mask
+                        tmp_sample = tmp_sample[~mask]
+                        tmp_data = tmp_data[~mask]
+                        tmp_label = tmp_label[~mask]                    
+
+        if label is None : 
+            return(self.data_over_bins)
+        else:
+            ## initialize the dictionnary that creates dictionnary if given a new key (age = x = data)
+            data_dict = defaultdict(lambda: {'values': 0, 'distinct_labels': []})
+            
+            # fill that dict
+            for x, value, label in zip(XSample_data, XSample_values, XSample_labels):
+                data_dict[x]['values'] += value
+                if label not in data_dict[x]['distinct_labels']:
+                    data_dict[x]['distinct_labels'].append(label)
+                
+            ## group by keys and sum the values divided by the number of distinct labels 
+            grouped_data = np.sort(list(data_dict.keys()))
+            grouped_values = [data_dict[data]['values'] for data in grouped_data]
+            grouped_counts = [len(data_dict[data]['distinct_labels']) for data in grouped_data]
+            values_over_labels = [value/count for value, count in zip(grouped_values, grouped_counts)] 
+            
+            ## return data over bins, ages of Xprecip, and Xprecip over this ages 
+            return(self.data_over_bins, grouped_data, values_over_labels, grouped_counts)
+
+    def computeAgeAnalysisOverBins(self,sample, MCS_list = None, label = None, sizemax=5000, verbose=False, skip_to_X = False, method = 'iterative reducing'):
+        """
+        MCS_list and label are built over the TOOCAN files, so they could not be specified and instead simply be read from the file, let's keep it like that for clarity for now
+        
+        This function doesn't require bin_locations to be stored as it will recomputed everything mask per bin,
+        but it will be much faster as it will reduce the size of the arrays after each bin computation.
+        
+        First output is the data with no treatmeant over bins
+        
+        the other outputs are optionnal and are computed only if the label array of MCS is provided
+        they consist of an analysis of bins>40 so the extremes only
+        
+        grouped_data is the data aggregated by grouping, quite straightforward
+        the 2 following are ordered to correspond to grouped_data 
+        values_over_labels is the sum of the values of sample divided by the distinct counts of labels. 
+        grouped_counts represent this distinct count of labels
+        """
+        from myFuncs import createTimeArray, Age_vec
+
+        ## Measure time of init phase 
+        t0 = time.time()
+
+        ## Treat MCS_list to extract the labels 
+        MCS_labels = [MCS_list[i].label for i in range(len(MCS_list))]
+        
+        ## Instantiate label_mask then time_array and flatten it as to match label and sample
+        mask_label = ~np.isnan(label)
+        time_array = createTimeArray(mask_label).flatten()
+
+        ## flatten sample and label
+        sample = sample.flatten()
+        label = label.flatten()
+
+        ## instantiate data over bins, and data over duration lists
+        data_over_bins  = [[] for _ in range(self.nbins)]
+        
+        ## these actually depends of the durations of MCS studied.. for now 2h to 10h MCS
+        MCS_duration_list = np.arange(4, 21, 1).astype(int).tolist() # [4, 5, ..., 20]
+        ages_per_duration = [[] for i in range(len(MCS_duration_list))]
+
+        ## instantiate the list that will be use for theAge Analysis
+        XSample_data = []
+        XSample_values = []
+        XSample_labels = []
+        XSample_duration = []
+
+        ## instantiate a dictionnary to retrieve the max precip value per MCS at each timestep
+        max_precipitations = {} 
+        max_ages = {} #Along with the relative age of the mcs at which it occured
+        
+        ## print time of init phase
+        print("init phase : ", time.time()-t0)
+        
+        if method == 'iterative reducing':
+            # Store a tmp for each array
+            first_bin = True
+            tmp_sample = sample.copy()
+            tmp_label = label.copy()
+            
+            for i_bin, percentile_value in enumerate(self.percentiles):
+                ## measure time for each loop
+                t0 = time.time()
+                if percentile_value == 0 : continue
+                elif percentile_value !=0:
+                    if first_bin :  ## this is the first bin, we need to remove the nan values and then create a mask that only keeps a certain ratio of the points choosen randomly
+                        time_array = time_array[tmp_sample!=0]                    
+                        tmp_label = tmp_label[tmp_sample!=0]
+                        tmp_sample = tmp_sample[tmp_sample!=0]
+                        first_bin = False
+                    
+                        # create a random mask that contains a certain ratio of true elements that correspond to the ration of the next 2 bins 
+                        
+                        mask_excess = np.logical_and(tmp_sample.flatten() >= self.bins[i_bin], tmp_sample.flatten() < self.bins[i_bin+1])
+                        # Indices of True values in the mask array
+                        true_indices = np.where(mask_excess)[0]
+                        
+                        # Randomly select indices to change to False
+                        false_indices = np.random.choice(true_indices, true_indices.size-sizemax, replace=False)
+
+                        # Change the selected indices to False
+                        first_mask = mask_excess.copy()
+                        first_mask[false_indices] = False
+
+                        first_mask_no_nan = np.logical_and(first_mask, ~np.isnan(tmp_label))
+                        
+                        first_time_array = time_array[first_mask_no_nan]
+                        first_label = tmp_label[first_mask_no_nan]
+                        
+
+                        #compute data_over_bin according to label over mask and time_array info crossed by MCS list
+                        out = Age_vec(first_label, first_time_array, MCS_list, MCS_labels)
+                        ages = out[0]
+                        
+                        ## store the data over bins
+                        data_over_bins[i_bin]  = ages
+                        
+                        tmp_sample = tmp_sample[~mask_excess]
+                        time_array = time_array[~mask_excess]
+                        tmp_label = tmp_label[~mask_excess]
+                    
+                    else : 
+                        mask = np.logical_and(tmp_sample.flatten() >= self.bins[i_bin], tmp_sample.flatten() < self.bins[i_bin+1])
+                        
+                        # put mask_no_nan to False if Xsample_labels is nan
+                        mask_no_nan = np.logical_and(mask, ~np.isnan(tmp_label))
+                         
+                        precips = tmp_sample[mask_no_nan]
+                        labels = tmp_label[mask_no_nan]
+                        times = time_array[mask_no_nan] 
+                                            
+                        # compute output with no nan
+                        out = Age_vec(labels, times, MCS_list, MCS_labels)
+                        ages = out[0]
+                        durations = out[1]
+                        if i_bin >= 40 and label is not None:
+                            # update list for Age Analysis Xtremes only
+                            XSample_data.extend(ages)
+                            XSample_values.extend(precips)
+                            XSample_labels.extend(labels)
+                            XSample_duration.extend(durations)
+                            
+                        ## add data over bins
+                        data_over_bins[i_bin]  = ages
+                        
+                        ## retrieve the max precip grouped by timestep and label
+                        
+                        # Iterate over the data and update the dictionary with the maximum precipitation values
+                        for precip, label, t, age in zip(precips, labels, times, ages):
+                            if label not in max_precipitations:
+                                # If the label is not in the dictionary, add it with the current precipitation value
+                                max_precipitations[label] = {}
+                                max_ages[label] = {}
+                                
+                            if t not in max_precipitations[label]:
+                                # If the timestep is not in the label's dictionary, add it with the current precipitation value
+                                max_precipitations[label][t] = precip
+                                max_ages[label][t] = age
+                            else:
+                                # If the timestep already exists in the label's dictionary, update the maximum precipitation value
+                                if precip > max_precipitations[label][t]:
+                                    max_precipitations[label][t] = precip
+                                    max_ages[label][t] = age
+
+                        ## reduce tmp array according to ~mask
+                        tmp_sample = tmp_sample[~mask]
+                        time_array = time_array[~mask]                   
+                        tmp_label = tmp_label[~mask] 
+
+                ## print time of each loop
+                print("loop ", i_bin, " : ", time.time()-t0)
+                
+        for age, duration in zip(XSample_data, XSample_duration):
+            for i, MCS_duration in enumerate(MCS_duration_list):
+                if duration == MCS_duration:
+                    ages_per_duration[i].append(age)
+                
+        ## initialize the dictionnary that creates dictionnary if given a new key (age = x = data)
+        mean_Xprecip_data_dict = defaultdict(lambda: {'values': 0, 'distinct_labels': []})
+        
+        # fill that dict
+        for x, value, label in zip(XSample_data, XSample_values, XSample_labels):
+            mean_Xprecip_data_dict[x]['values'] += value
+            if label not in mean_Xprecip_data_dict[x]['distinct_labels']:
+                mean_Xprecip_data_dict[x]['distinct_labels'].append(label)
+        
+        ## group by keys and sum the values divided by the number of distinct labels 
+        meanX_grouped_data = np.sort(list(mean_Xprecip_data_dict.keys()))
+        meanX_grouped_values = [mean_Xprecip_data_dict[data]['values'] for data in meanX_grouped_data]
+        meanX_grouped_counts = [len(mean_Xprecip_data_dict[data]['distinct_labels']) for data in meanX_grouped_data]
+        meanX_values_over_labels = [value/count for value, count in zip(meanX_grouped_values, meanX_grouped_counts)] 
+        
+        max_precip_data_dict = defaultdict(lambda: {'values': 0, 'distinct_labels': []})
+        
+        for label, time_max_precip in max_precipitations.items():
+            ages_max_precip = max_ages[label]
+            for t, max_precip in time_max_precip.items():
+                age = ages_max_precip[t]
+                max_precip_data_dict[age]['values'] += max_precip
+                if label not in max_precip_data_dict[age]['distinct_labels']:
+                    max_precip_data_dict[age]['distinct_labels'].append(label)
+                    
+        max_grouped_data = np.sort(list(max_precip_data_dict.keys()))
+        max_grouped_values = [max_precip_data_dict[data]['values'] for data in max_grouped_data]
+        max_grouped_counts = [len(max_precip_data_dict[data]['distinct_labels']) for data in max_grouped_data]
+        max_values_over_labels = [value/count for value, count in zip(max_grouped_values, max_grouped_counts)]
+                
+                  
+        ## return data over bins, ages of Xprecip, and Xprecip over this ages 
+        return((data_over_bins, meanX_grouped_data, meanX_values_over_labels, meanX_grouped_counts, ages_per_duration, max_grouped_data, max_values_over_labels, max_grouped_counts))
+    
     def computeIndividualPercentiles(self,sample,ranks,out=False):
         """Computes percentiles of input sample and store in object attribute"""
 
