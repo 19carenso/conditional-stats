@@ -1106,9 +1106,9 @@ class JointDistribution():
         #if verbose : print(digit1, digit2)
         N1 = [np.sum(digit1==i1) for i1 in range(l1)]
         N2 = [np.sum(digit2==i2) for i2 in range(l2)]
-
+        Ntot = sample1.size
         with np.errstate(divide='ignore'):
-            Norm = 1 / np.sqrt(np.outer(N1, N2))
+            Norm = Ntot / np.outer(N1, N2)
         Norm[np.isinf(Norm)] = 1
 
         self.density = np.zeros(shape = (l1, l2))
