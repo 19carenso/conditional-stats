@@ -1109,7 +1109,7 @@ class JointDistribution():
         Ntot = sample1.size
         with np.errstate(divide='ignore'):
             Norm = Ntot / np.outer(N1, N2)
-        Norm[np.isinf(Norm)] = 1
+        Norm[np.isinf(Norm)] = 0
 
         self.density = np.zeros(shape = (l1, l2))
         if data is not None : data_over_density = np.zeros(shape=(l1,l2))
@@ -1129,6 +1129,8 @@ class JointDistribution():
             self.density *= Norm
 
         if data is not None : return data_over_density
+        else : return self.density/Norm/Ntot, 1/Norm, N1, N2, Ntot
+
 
     def computeVariationOverDensity(self, sample1, sample11, bins11, sample2, sample22, bins22, reverse = False, verbose = False):
 
